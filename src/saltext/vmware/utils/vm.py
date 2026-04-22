@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 import logging
 import tarfile
-import time
 
 import salt.exceptions
 import saltext.vmware.utils.cluster as utils_cluster
@@ -19,33 +18,6 @@ except ImportError:
 
 log = logging.getLogger(__name__)
 
-
-def shutdown(virtual_machine):
-    """
-    Gracefully shuts down a VM
-
-    virtual_machine
-        vim.VirtualMachine object to power on/off virtual machine
-
-    """
-
-    if virtual_machine.summary.runtime.powerState == "poweredOn":
-        try:
-            virtual_machine.ShutdownGuest()
-        except vim.fault.ToolsUnavailable:
-            raise salt.exceptions.VMwareApiError(
-                "VMware tools not running"
-            )
-        timeout_counter = 20
-        while virtual_machine.summary.runtime.powerState != "poweredOff":
-            time.sleep(5)
-            timeout_counter -= 1
-            if timeout_counter == 0:
-                return False
-
-        return True
-
-    return "VM already powered off"
 
 def power_cycle_vm(virtual_machine, action="on"):
     """
@@ -214,7 +186,7 @@ def clone_vm(vm_name, folder_object, template, clone_config_spec):
     return vm_object
 
 
-def register_vm(datacenter, name, vmx_path, resourcepool_object, folder_name=None, service_instance=None, host_object=None):
+def register_vm(datacenter, name, vmx_path, resourcepool_object, host_object=None):
     """
     Registers a virtual machine to the inventory with the given vmx file, on success
     it returns the vim.VirtualMachine managed object reference
@@ -231,64 +203,22 @@ def register_vm(datacenter, name, vmx_path, resourcepool_object, folder_name=Non
     resourcepool
         Placement resource pool of the virtual machine, vim.ResourcePool object
 
-    folder_name
-        Folder to register the VM in
-
-    service_instance
-        The Service Instance Object from which to obtain Folders (required with folder_name).
-
-    host_object
+    host
         Placement host of the virtual machine, vim.HostSystem object
     """
     try:
-        if folder_name:
-            folder = None
-            folders = [f for f in utils_common.get_all_folders(service_instance=service_instance, datacenter=datacenter) if f.name == folder_name]
-            if not folders:
-                return {
-                    "success": False, 
-                    "comment": "register_vm failed",
-                    "error": "failed to find folder"
-                }
-            elif len(folders) > 1:
-                return {
-                    "success": False,
-                    "comment": "register_vm failed",
-                    "error": "More than one matching folder"
-                }
-            else:
-                folder = folders[0]
-
-        if host_object and folder_name:
-            task = folder.RegisterVM_Task(
-                path=vmx_path,
-                name=name,
-                asTemplate=False,
-                host=host_object,
-                pool=resourcepool_object,
-            )
-        elif folder_name:
-            task = folder.RegisterVM_Task(
-                path=vmx_path, name=name, asTemplate=False, pool=resourcepool_object
-            )
-        elif host_object and not folder_name:
+        if host_object:
             task = datacenter.vmFolder.RegisterVM_Task(
                 path=vmx_path,
                 name=name,
                 asTemplate=False,
                 host=host_object,
                 pool=resourcepool_object,
-            )
-        elif not host_object and not folder_name:
-            task = datacenter.vmFolder.RegisterVM_Task(
-                path=vmx_path, name=name, asTemplate=False, pool=resourcepool_object
             )
         else:
-            return {
-                "success": False, 
-                "comment": "register_vm failed",
-                "error": "Should not be here"
-            }
+            task = datacenter.vmFolder.RegisterVM_Task(
+                path=vmx_path, name=name, asTemplate=False, pool=resourcepool_object
+            )
     except vim.fault.NoPermission as exc:
         log.exception(exc)
         raise salt.exceptions.VMwareApiError(
@@ -312,7 +242,7 @@ def register_vm(datacenter, name, vmx_path, resourcepool_object, folder_name=Non
 
 def update_vm(vm_ref, vm_config_spec):
     """
-    Updates the virtual machine hardware configuration with the given object
+    Updates the virtual machine configuration with the given object
 
     vm_ref
         Virtual machine managed object reference
@@ -337,36 +267,6 @@ def update_vm(vm_ref, vm_config_spec):
         raise salt.exceptions.VMwareRuntimeError(exc.msg)
     vm_ref = utils_common.wait_for_task(task, vm_name, "ReconfigureVM Task")
     return vm_ref
-
-
-def customize_vm(vm_ref, vm_config_spec):
-    """
-    Customizes the virtual machine OS configuration with the given object
-
-    vm_ref
-        Virtual machine managed object reference
-
-    vm_config_spec
-        Virtual machine config spec object to update
-    """
-    vm_name = utils_common.get_managed_object_name(vm_ref)
-    log.trace("Customizing vm '%s'", vm_name)
-    try:
-        task = vm_ref.CustomizeVM_Task(spec=vm_config_spec)
-    except vim.fault.NoPermission as exc:
-        log.exception(exc)
-        raise salt.exceptions.VMwareApiError(
-            "Not enough permissions. Required privilege: " "{}".format(exc.privilegeId)
-        )
-    except vim.fault.VimFault as exc:
-        log.exception(exc)
-        raise salt.exceptions.VMwareApiError(exc.msg)
-    except vmodl.RuntimeFault as exc:
-        log.exception(exc)
-        raise salt.exceptions.VMwareRuntimeError(exc.msg)
-    vm_ref = utils_common.wait_for_task(task, vm_name, "CustomizeVM Task")
-    return vm_ref
-
 
 
 def delete_vm(vm_ref):

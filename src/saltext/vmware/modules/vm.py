@@ -6,10 +6,8 @@ import salt.exceptions
 import salt.utils.platform
 import saltext.vmware.utils.common as utils_common
 import saltext.vmware.utils.connect as connect
-import saltext.vmware.utils.datacenter as utils_datacenter
 import saltext.vmware.utils.datastore as utils_datastore
 import saltext.vmware.utils.vm as utils_vm
-import saltext.vmware.utils.vsphere as utils_vmware
 
 log = logging.getLogger(__name__)
 
@@ -317,11 +315,6 @@ def info(vm_name=None, service_instance=None, profile=None):
                     vms.append(i)
 
     for vm in vms:
-        if not vm:
-            info[vm_name] = f"{vm_name} not found"
-            info["success"] = False
-            continue
-
         datacenter_ref = utils_common.get_parent_type(vm, vim.Datacenter)
         mac_address = utils_vm.get_mac_address(vm)
         network = utils_vm.get_network(vm)
@@ -331,7 +324,6 @@ def info(vm_name=None, service_instance=None, profile=None):
         folder_path = utils_common.get_path(vm, service_instance)
         info[vm.summary.config.name] = {
             "guest_name": vm.summary.config.name,
-            "path": vm.summary.config.vmPathName,
             "guest_fullname": vm.summary.guest.guestFullName,
             "power_state": vm.summary.runtime.powerState,
             "ip_address": vm.summary.guest.ipAddress,
@@ -343,7 +335,7 @@ def info(vm_name=None, service_instance=None, profile=None):
             "cluster": vm.summary.runtime.host.parent.name,
             "tags": tags,
             "folder": folder_path,
-            "moid": vm._moId
+            "moid": vm._moId,
         }
     return info
 
@@ -385,9 +377,6 @@ def power_state(vm_name, state, datacenter_name=None, service_instance=None, pro
         )
     else:
         vm_ref = utils_common.get_mor_by_property(service_instance, vim.VirtualMachine, vm_name)
-
-    if vm_ref == None:
-        return (False, "vm doesn't exist or not found")
     if state == "powered-on" and vm_ref.summary.runtime.powerState == "poweredOn":
         result = {
             "comment": "Virtual machine is already powered on",
@@ -409,7 +398,7 @@ def power_state(vm_name, state, datacenter_name=None, service_instance=None, pro
     result_ref_vm = utils_vm.power_cycle_vm(vm_ref, state)
     result = {
         "comment": f"Virtual machine {state} action succeeded",
-        "changes": {"state": f"{vm_name} -> {result_ref_vm.summary.runtime.powerState}"},
+        "changes": {"state": result_ref_vm.summary.runtime.powerState},
     }
     return result
 
@@ -541,9 +530,9 @@ def create_snapshot(
     snapshot = utils_vm.create_snapshot(vm_ref, snapshot_name, description, include_memory, quiesce)
 
     if isinstance(snapshot, vim.vm.Snapshot):
-        return {"snapshot": "created", "success": True}
+        return {"snapshot": "created"}
     else:
-        return {"snapshot": "failed to create", "success": False}
+        return {"snapshot": "failed to create"}
 
 
 def destroy_snapshot(
@@ -687,8 +676,8 @@ def relocate(
         vm_ref, resources["destination_host"], datastore_ref, resources["resource_pool"]
     )
     if ret == "success":
-        return {"virtual_machine": "moved", "success": True}
-    return {"virtual_machine": "failed to move", "success": False}
+        return {"virtual_machine": "moved"}
+    return {"virtual_machine": "failed to move"}
 
 
 def get_mks_ticket(vm_name, ticket_type, service_instance=None, profile=None):
@@ -725,368 +714,3 @@ def get_mks_ticket(vm_name, ticket_type, service_instance=None, profile=None):
         ticket = vm_ref.AcquireTicket(ticket_type)
         return json.loads(json.dumps(ticket, cls=VmomiSupport.VmomiJSONEncoder))
     return {}
-
-def unregister(vm_name, shutdown=False, service_instance=None, profile=None):
-    """
-    Unregisters a VM
-
-    vm_name
-        The name of the virtual machine to unregister.
-
-    service_instance
-        (optional) The Service Instance from which to obtain managed object references.
-
-    profile
-        Profile to use (optional)
-
-    CLI Example:
-
-    .. code-block:: bash
-
-        salt '*' vmware_vm.unregister_vm vm_name=vm01
-    """
-    ret = "No changes made"
-    service_instance = service_instance or connect.get_service_instance(
-        config=__opts__, profile=profile
-    )
-
-    log.debug("running vmware_vm.unregister")
-    vm = utils_common.get_mor_by_property(
-            service_instance,
-            vim.VirtualMachine,
-            vm_name,
-         )
-
-    if vm.summary.runtime.powerState == "poweredOn":
-        if shutdown:
-            try:
-                utils_vm.shutdown(vm)
-            except Exception as err:
-                return (False, f"error powering off vm before unregistration: {err}")   
-        else:
-            return (False, "VM must be powered off")
-
-    try:
-        log.debug(f"unregistering {vm.name}")
-        utils_vm.unregister_vm(vm)
-        ret = {
-            "success": True,
-        }
-    except Exception as err:
-        ret = {
-            "success": False, 
-            "comment": "Unregsitering VM failed",
-            "error": f"error unregistering vm: {err}"
-        }
-
-    return ret
-
-def register(datacenter_name, pool_name, vm_name, vmx_path, folder_name=None, service_instance=None, profile=None):
-    """
-    registers a VM
-
-    datacenter_name
-        The name of the datacenter to place the VM in
-
-    pool_name
-        The name of the resource pool to place the VM in
-
-    vm_name
-        The name of the virtual machine to register.
-
-    vmx_path
-        The path to the vmx file containing the machine info
-
-    folder_name
-        The name of the folder to place the VM in
-
-    service_instance
-        (optional) The Service Instance from which to obtain managed object references.
-
-    profile
-        Profile to use (optional)
-
-    CLI Example:
-
-    .. code-block:: bash
-
-        salt '*' vmware_vm.info vm_name=vm01
-    """
-    ret = "No changes made"
-    service_instance = service_instance or connect.get_service_instance(
-        config=__opts__, profile=profile
-    )
-
-    log.debug("running vmware_vm.register")
-    datacenter = utils_datacenter.get_datacenter(service_instance, datacenter_name)
-    pool = utils_common.get_resource_pools(service_instance, [pool_name], datacenter_name)
-    
-    if len(pool) > 1:
-        return {
-            "success": False, 
-            "comment": "register VM failed",
-            "error": "too many pools"
-        }
-    elif len(pool) == 0:
-        return {
-            "success": False,
-            "comment": "register VM failed",
-            "error": f"pool {pool_name} not found"
-        }
-    else:
-        pool = pool[0]
-
-    try:
-        log.debug(f"registering {vm_name}")
-        ret = utils_vm.register_vm(datacenter, vm_name, vmx_path, pool, folder_name, service_instance)
-        if not isinstance(ret, dict):
-            ret = True
-    except Exception as err:
-        ret = {
-            "success": False,
-            "comment": "register VM failed",
-            "error": f"error registering vm: {err}"
-        }
-
-    return ret
-
-
-def set_ip_info(ip, subnet, gw, dns, domain, vm_name, os=None, service_instance=None, profile=None):
-    """
-    sets IP info for a VM (VM must be powered off first)
-
-    ip
-        The IP address to set
-    
-    subnet
-        The subnet mask to set
-    
-    gw
-        The gateway to set
-
-    dns
-        (list) "[dns1, dns2]"
-
-    domain
-        dns domain for the NIC
-
-    vm_name
-        The name of the VM to modify
-
-    os
-        The VM of the guest, if the guest is newly imported this field must be used (Optional)
-
-    service_instance
-        (optional) The Service Instance from which to obtain managed object references.
-
-    profile
-        Profile to use (optional)
-
-    CLI Example:
-
-    .. code-block:: bash
-
-        salt '*' vmware_vm.set_ip_info ip=192.168.2.2 subnet=255.255.255.0 gw=192.168.2.1 dns=(192.168.2.10,192.168.2.11) vm_name=vm01
-    """
-
-
-    ret = "No changes made"
-    service_instance = service_instance or connect.get_service_instance(
-        config=__opts__, profile=profile
-    )
-
-    log.debug("running vmware_vm.set_ip_info")
-
-    vm = utils_common.get_mor_by_property(
-                service_instance,
-                vim.VirtualMachine,
-                vm_name,
-            )
-    if vm.summary.runtime.powerState == "poweredOn":
-        return {
-            "success": False,
-            "comment": "set_ip_info failed",
-            "error": "VM must be powered off"
-        }
-
-    if vm.summary.guest.guestFullName:
-        vm_os = vm.summary.guest.guestFullName.lower()
-    elif os:
-        vm_os = os
-    else:
-        return {
-            "success": False, 
-            "comment": "set_ip_info failed",
-            "error": "guestFullName is empty AND os was not passed"
-        }
-
-    if 'linux' in vm_os:
-        identity = vim.vm.customization.LinuxPrep()
-        identity.hostName = vim.vm.customization.FixedName()
-        identity.hostName.name = vm_name
-        identity.domain = domain
-    elif 'windows' in vm_os:
-        identity = vim.vm.customization.Sysprep()
-        # there are likely some other settings needed here
-    else:
-        return {
-            "success": False, 
-            "comment": "set_ip_info failed",
-            "error": "Unsupported OS for IP customization"
-        }
-
-    adapter_map = {}
-    adapter_count = 0
-    for device in vm.config.hardware.device:
-        if isinstance(device, vim.vm.device.VirtualEthernetCard):
-            adapter_count += 1
-            adapter_map[device.deviceInfo.label] = device
-
-    if adapter_count > 1:
-        return {
-            "success": False, 
-            "comment": "set_ip_info failed",
-            "error": "Only a single NIC is supported for IP customization"
-        }
-
-    ip_settings = vim.vm.customization.IPSettings()
-    ip_settings.ip = vim.vm.customization.FixedIp()
-    ip_settings.ip.ipAddress = ip
-    ip_settings.subnetMask = subnet
-    ip_settings.gateway = [gw]
-    ip_settings.dnsServerList = list(dns)
-    ip_settings.dnsDomain = domain
- 
-    globalip = vim.vm.customization.GlobalIPSettings()
-    globalip.dnsServerList = list(dns)
-    globalip.dnsSuffixList = [domain]
-
-    adapter = vim.vm.customization.AdapterMapping()
-    adapter.adapter = ip_settings
-
-    for device in vm.config.hardware.device:
-        if isinstance(device, vim.vm.device.VirtualEthernetCard):
-            adapter_map[device.deviceInfo.label] = adapter
-
-    spec = vim.vm.customization.Specification()
-    spec.identity = identity
-    spec.globalIPSettings = globalip
-    spec.nicSettingMap = list(adapter_map.values())
-
-    try:   
-        utils_vm.customize_vm(vm, spec)
-        ret = True
-    except Exception as err:
-        ret = {
-            "success": False, 
-            "comment": "set_ip_info failed",
-            "error": f"error updating ip: {err}"
-        }
-
-    return ret
-
-
-def set_dvport(vm_name, dvswitch_name, dport_group_name, service_instance=None, profile=None):
-    """
-    Sets the Distributed Virtual Port Group of a VM (only single NIC supported)
-
-    vm_name
-        The name of the VM to change
-
-    dvswitch_name
-        The name of the Distributed Virtual Switch that contains the desired Port Group
-
-    dport_group_name
-        The name of the Distributed Port Group for the VM
-
-    service_instance
-        (optional) The Service Instance from which to obtain managed object references.
-
-    profile
-        Profile to use (optional)
-
-    CLI Example:
-
-    .. code-block:: bash
-
-        salt '*' vmware_vm.set_dvportgroup vm1 dvs2 dport1 profile=vcsa_config1
-    """
-    log.debug("Running vmware_vm.set_dvport")
-    service_instance = service_instance or connect.get_service_instance(
-        config=__opts__, profile=profile
-    )
-
-    dvs = utils_vmware._get_dvs(service_instance, dvswitch_name)
-    if not dvs:
-        return {
-            "success": False, 
-            "comment": "setting distributed virtual port failed",
-            "error": "Specified Distributed Switch not found"
-        }
-
-    port_group = utils_vmware._get_dvs_portgroup(dvs=dvs, portgroup_name=dport_group_name)
-    if not port_group:
-        return {
-            "success": False, 
-            "comment": "setting distributed virtual port failed",
-            "error": "Specifed Distributed Port Group not found"
-
-        }
-
-    vm = utils_common.get_mor_by_property(
-                service_instance,
-                vim.VirtualMachine,
-                vm_name,
-            )
-    if not vm:
-        return {
-            "success": False, 
-            "comment": "setting distributed virtual port failed",
-            "error": "Specified VM  not found"
-        }
-    if vm.summary.runtime.powerState == "poweredOn":
-        return {
-            "success": False, 
-            "comment": "setting distributed virtual port failed",
-            "error": "VM must be powered off"
-        }
-
-    vm_reconfig_spec = vim.vm.ConfigSpec()
-    nic_change_spec = vim.vm.device.VirtualDeviceSpec()
-    nic_change_spec.operation = vim.vm.device.VirtualDeviceSpec.Operation.edit
-    nic = None
-
-    nic_count = 0
-    for device in vm.config.hardware.device:
-        if isinstance(device, vim.vm.device.VirtualEthernetCard):
-            nic_count += 1
-        if nic_count > 1:
-            return {
-                "success": False, 
-                "comment": "setting distributed virtual port failed",
-                "error": "Only VMs with a single NIC supported"
-            }
-        if isinstance(device, vim.vm.device.VirtualVmxnet3):
-            nic = device
-
-    port_config_spec = vim.dvs.PortConnection()
-    port_config_spec.portgroupKey = port_group.key
-    port_config_spec.switchUuid = port_group.config.distributedVirtualSwitch.uuid
-    nic.backing = vim.vm.device.VirtualEthernetCard.DistributedVirtualPortBackingInfo()
-    nic.backing.port = port_config_spec        
-        
-    nic_change_spec.device = nic
-    vm_reconfig_spec.deviceChange.append(nic_change_spec)
-
-    try:
-        utils_vm.update_vm(vm, vm_reconfig_spec)
-        ret = True
-    except Exception as err:
-        ret = {
-            "success": False, 
-            "comment": "setting distributed virtual port failed",
-            "error": f"error updating Distributed Virtual Port Group: {err}"
-        }
-
-    return ret
-

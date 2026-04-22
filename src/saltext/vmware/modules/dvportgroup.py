@@ -25,7 +25,7 @@ def __virtual__():
     return __virtualname__
 
 
-def get(switch_name, portgroup_id=None, host_name=None, service_instance=None, profile=None):
+def get(switch_name, portgroup_key, host_name=None, service_instance=None, profile=None):
     """
     Get distributed portgroup from a distributed switch optionally from a host.
 
@@ -35,9 +35,9 @@ def get(switch_name, portgroup_id=None, host_name=None, service_instance=None, p
     switch_name
         Name of the distributed switch.
 
-    portgroup_id
-        Portgroup key or name. (Optional).
-    
+    portgroup_key
+        Portgroup key.
+
     host_name
         Name of the ESXi host.  (optional).
 
@@ -47,32 +47,25 @@ def get(switch_name, portgroup_id=None, host_name=None, service_instance=None, p
     profile
         Profile to use (optional)
     """
-    ret = []
+    ret = {}
 
     service_instance = service_instance or connect.get_service_instance(
         config=__opts__, profile=profile
     )
 
     switch_ref = utils_vmware._get_dvs(service_instance=service_instance, dvs_name=switch_name)
+
     if switch_ref:
         for portgroup in switch_ref.portgroup:
-            pg = {}
-            pg["name"] = portgroup.config.name
-            pg["key"] = portgroup.config.key
-            pg["vlan"] = portgroup.config.defaultPortConfig.vlan.vlanId
-            pg["ports"] = portgroup.config.numPorts
-            pg["pnic"] = []
-            if host_name:
-                for host in portgroup.config.distributedVirtualSwitch.config.host:
-                    if host.config.host.name == host_name:
-                        for pnic in host.config.backing.pnicSpec:
-                            pg["pnic"].append(pnic.pnicDevice)
-
-            if portgroup_id and portgroup_id in [portgroup.config.name, portgroup.config.key]:
-                ret.append(pg)
-            elif not portgroup_id:
-                ret.append(pg)
-
+            if portgroup.key == portgroup_key:
+                ret["name"] = portgroup.config.name
+                ret["vlan"] = portgroup.config.defaultPortConfig.vlan.vlanId
+                ret["pnic"] = []
+                if host_name:
+                    for host in portgroup.config.distributedVirtualSwitch.config.host:
+                        if host.config.host.name == host_name:
+                            for pnic in host.config.backing.pnicSpec:
+                                ret["pnic"].append(pnic.pnicDevice)
 
         ret = json.loads(json.dumps(ret, cls=VmomiSupport.VmomiJSONEncoder))
     return ret
