@@ -2325,7 +2325,7 @@ def list_resourcepools(service_instance):
     service_instance
         The Service Instance Object from which to obtain resource pools.
     """
-    return utils_common.list_objects(service_instance, vim.ResourcePool)
+    return utils_common.list_objects2(service_instance, vim.ResourcePool, ['summary', 'owner', 'parent'])
 
 
 def list_networks(service_instance):

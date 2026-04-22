@@ -98,7 +98,8 @@ def list_resourcepools(
     service_instance = service_instance or utils_connect.get_service_instance(
         config=__opts__, profile=profile
     )
-    return utils_vsphere.list_resourcepools(service_instance)
+    pools = utils_vsphere.list_resourcepools(service_instance)
+    return [(p['owner'].name,p['summary'].config.entity._moId) for p in pools]
 
 
 def list_networks(
