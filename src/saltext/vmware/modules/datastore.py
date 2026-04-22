@@ -144,6 +144,7 @@ def get(
             "type": summary.type,
             "url": summary.url,
             "uncommitted": summary.uncommitted if summary.uncommitted else 0,
+            "folder": utils_common.get_path(datastore, service_instance),
         }
         ret.append(info)
 
@@ -230,7 +231,6 @@ def list_datastores(
         datastores = utils_datastore.get_datastores_from_ref(
             service_instance, host, datastore_names, backing_disk_ids, get_all_datastores
         )
-
         # Search for disk backed datastores if target is host
         # to be able to add the backing_disk_ids
         mount_infos = []
@@ -247,17 +247,18 @@ def list_datastores(
                 "type": datastore.summary.type,
                 "free_space": datastore.summary.freeSpace,
                 "capacity": datastore.summary.capacity,
+                "uuid": datastore.info.vmfs.uuid,
             }
-            backing_disk_ids = []
+            backing_disk_id_list = []
             for vol in [
                 i.volume
                 for i in mount_infos
                 if i.volume.name == datastore.name and isinstance(i.volume, vim.HostVmfsVolume)
             ]:
 
-                backing_disk_ids.extend([e.diskName for e in vol.extent])
-            if backing_disk_ids:
-                datastore_dict["backing_disk_ids"] = backing_disk_ids
+                backing_disk_id_list.extend([e.diskName for e in vol.extent])
+            if backing_disk_id_list:
+                datastore_dict["backing_disk_ids"] = backing_disk_id_list
             ret[host.name].append(datastore_dict)
     return ret
 
@@ -408,3 +409,211 @@ def list_datastore_clusters(
         get_all_hosts=host_name is None,
     )
     return utils_datastore.list_datastore_clusters(service_instance)
+
+def unmount_datastore(
+    datastore_name,
+    datacenter_name=None,
+    cluster_name=None,
+    host_name=None,
+    service_instance=None,
+    profile=None,
+):
+    """
+    unmounts a datastore and detaches the backing disk    
+
+    datastore_name
+        Name of the datastore to unmount
+
+    datacenter_name
+        Filter by this datacenter name (required when cluster is not specified)
+
+    cluster_name
+        Filter by this cluster name (required when datacenter is not specified)
+
+    host_name
+        Filter by this ESXi hostname (optional).
+
+    service_instance
+        Use this vCenter service connection instance instead of creating a new one. (optional).
+
+    profile
+        Profile to use (optional)
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' vmware_datastore.unmount_datastore datastore_name=ds1 
+        salt '*' vmware_datastore.unmount_datastore datastore_name=ds1 cluster_name=cl1
+    """
+    log.debug("Running vmware_datastore.unmount_datastore")
+    ret = {"success": True}
+    service_instance = service_instance or connect.get_service_instance(
+        config=__opts__, profile=profile
+    )
+    hosts = utils_esxi.get_hosts(
+        service_instance=service_instance,
+        host_names=[host_name] if host_name else None,
+        cluster_name=cluster_name,
+        datacenter_name=datacenter_name,
+        get_all_hosts=host_name is None,
+    )
+    for host in hosts:
+        ret[host.name] = []
+        datastores = utils_datastore.get_datastores_from_ref(
+            service_instance, host, [datastore_name], None, False
+        )
+        if isinstance(host, vim.HostSystem):
+            storage_system = utils_common.get_storage_system(service_instance, host, host.name)
+            props = utils_common.get_properties_of_managed_object(
+                storage_system, ["fileSystemVolumeInfo.mountInfo"]
+            )
+            mount_infos = props.get("fileSystemVolumeInfo.mountInfo", [])
+
+            for datastore in datastores:
+                for host_mount in datastore.host:
+                    if host_mount.key.name == host.name:
+                        if host_mount.mountInfo.mounted:
+                            try:
+                                ret[host.name].append(f"unmounting vmfs {datastore.info.vmfs.uuid} from {host.name}")
+                                storage_system.UnmountVmfsVolume(datastore.info.vmfs.uuid)
+                            except Exception as err:
+                                ret["success"] = False
+                                ret[host.name].append((False, f"Error unmounting vmfs: {err}"))
+                                return ret
+                        else:
+                            ret[host.name].append(f"vmfs {datastore.info.vmfs.uuid} not mounted on {host.name}")
+                try:
+                    for vol in [
+                        i.volume
+                        for i in mount_infos
+                        if i.volume.name == datastore.name and isinstance(i.volume, vim.HostVmfsVolume)
+                    ]:
+                        for dsk in vol.extent:
+                            ret[host.name].append(f"detaching disk {dsk.diskName} from {host.name}")
+                            storage_system.DetachScsiLun(dsk.diskName)
+                except Exception as err:
+                    ret["success"] = False
+                    ret[host.name].append((False, f"Error detaching lun: {err}"))
+                    return ret
+
+                storage_system.RefreshStorageSystem()
+                ret[host.name].append(f"rescanning storage on {host.name}")
+    return ret
+
+def mount_datastore(
+    datastore_name,
+    vmfs_uuid,
+    disk_id,
+    datacenter_name=None,
+    cluster_name=None,
+    host_name=None,
+    folder_name=None,
+    service_instance=None,
+    profile=None,
+):
+    """
+    attaches a lun and mounts the datastore in the lun
+
+    datastore_name
+        The name of the datastore that will be attached
+
+    vmfs_uuid
+        The uuid of the VMFS datastore to mount
+
+    disk_id
+        The id of the scsi lun to attach
+	
+    datacenter_name
+        Filter by this datacenter name (required when cluster is not specified)
+
+    cluster_name
+        Filter by this cluster name (required when datacenter is not specified)
+
+    host_name
+        Filter by this ESXi hostname (optional).
+
+    folder_name
+        The name of the folder to put the datastore in (optional)
+
+    service_instance
+        Use this vCenter service connection instance instead of creating a new one. (optional).
+
+    profile
+        Profile to use (optional)
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' vmware_datastore.mount_datastore datastore_name=ds1 vmfs_uuid=xxxx=-xxx-xxxxx disk_id=naa.xxxxxxxx
+        salt '*' vmware_datastore.mount_datastore datastore_name=ds1 vmfs_uuid=xxxx=-xxx-xxxxx disk_id=naa.xxxxxxxx cluster_name=cl1
+    """
+    log.debug("Running vmware_datastore.mount_datastore")
+    ret = {"success": True}
+    service_instance = service_instance or connect.get_service_instance(
+        config=__opts__, profile=profile
+    )
+    hosts = utils_esxi.get_hosts(
+        service_instance=service_instance,
+        host_names=[host_name] if host_name else None,
+        cluster_name=cluster_name,
+        datacenter_name=datacenter_name,
+        get_all_hosts=host_name is None,
+    )
+    for host in hosts:
+        ret[host.name] = []
+        datastores = utils_datastore.get_datastores_from_ref(
+            service_instance, host, [datastore_name], None, False
+        )
+        ds = utils_vmware.get_host_datastore_system(host)
+        if not datastores:
+            if isinstance(host, vim.HostSystem):
+                storage_system = utils_common.get_storage_system(service_instance, host, host.name)
+                props = utils_common.get_properties_of_managed_object(
+                    storage_system, ["fileSystemVolumeInfo.mountInfo"]
+                )
+                try:
+                    ret[host.name].append(f"attaching disk {disk_id} to {host.name}")
+                    storage_system.AttachScsiLun(disk_id)
+                except vim.fault.InvalidState:
+                    ret[host.name].append(f"disk {disk_id} already attached to {host.name}")
+            
+                storage_system.RefreshStorageSystem()
+                ret[host.name].append(f"rescanning storage on {host.name}")
+                try:
+                    ret[host.name].append(f"mounting vmfs {vmfs_uuid} to {host.name}")
+                    storage_system.MountVmfsVolume(vmfs_uuid)
+                except vim.fault.NotFound as err:
+                    ret[host.name].append(f"vmfs {vmfs_uuid} not found")
+                    unresolved_vols = storage_system.QueryUnresolvedVmfsVolume()
+                    if unresolved_vols:
+                        ret[host.name].append(f"unresolved volumes found")
+                    for un_vol in unresolved_vols:
+                        if un_vol.vmfsUuid == vmfs_uuid:
+                            if un_vol.resolveStatus.resolvable:
+                                ret[host.name].append(f"{vmfs_uuid} has a resolvable conflict")
+                                spec = vim.host.UnresolvedVmfsResolutionSpec()
+                                paths = []
+                                for extent in un_vol.extent:
+                                    paths.append(extent.devicePath)
+                                spec.extentDevicePath = paths
+                                spec.uuidResolution = "forceMounted"
+                                try:
+                                    ret[host.name].append(f"resolving {vmfs_uuid}")
+                                    storage_system.ResolveMultipleUnresolvedVmfsVolumes([spec])
+                                except Exception as err:
+                                    ret["success"] = False
+                                    ret[host.name].append(f"Error: {err}")
+                            else:
+                                ret["success"] = False
+                                ret[host.name].append((False, f"{vmfs_uuid} has an unresolvable conflict"))
+                except vim.fault.InvalidState:
+                    ret[host.name].append(f"vmfs {vmfs_uuid} already mounted")
+                    
+                storage_system.RefreshStorageSystem()
+                ret[host.name].append(f"rescanning storage on {host.name}")
+        else:
+            ret[host.name].append("datastore already mounted")
+
+    return ret

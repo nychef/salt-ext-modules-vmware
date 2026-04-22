@@ -331,6 +331,31 @@ def list_objects(service_instance, vim_object, properties=None):
     return items
 
 
+def list_objects2(service_instance, vim_object, properties=None):
+    """
+    Returns a simple list of objects from a given service instance.
+
+    service_instance
+        The Service Instance for which to obtain a list of objects.
+
+    object_type
+        The type of content for which to obtain information.
+
+    properties
+        An optional list of object properties used to return reference results.
+        If not provided, defaults to ``name``.
+    """
+    if properties is None:
+        properties = ["name"]
+
+    items = []
+    item_list = get_mors_with_properties(service_instance, vim_object, properties)
+    for item in item_list:
+        items.append(item)
+    return items
+
+
+
 def get_service_instance_from_managed_object(mo_ref, name="<unnamed>"):
     """
     Retrieves the service instance from a managed object.
@@ -405,6 +430,49 @@ def get_managed_object_name(mo_ref):
     return props.get("name")
 
 
+def get_folder(name, folder_type, service_instance=None, datacenter_name=None):
+    folder = None
+    for f in get_all_folders(service_instance, datacenter_name, folder_key=folder_type):
+        if f.name == name:
+            folder = f
+
+    return folder
+
+
+def get_all_folders(service_instance=None, datacenter_name=None, datacenter=None, folder_key="vmFolder"):
+    dcenter = None
+    if datacenter_name:
+        try:
+            import saltext.vmware.utils.datacenter as utils_datacenter
+            dc_ref = utils_datacenter.get_datacenter(service_instance, name)
+            dc = get_mors_with_properties(
+                service_instance, vim.Datacenter, container_ref=dc_ref, local_properties=True
+            )
+        except (salt.exceptions.VMwareApiError, salt.exceptions.VMwareObjectRetrievalError) as exc:
+            return {name: False, "reason": str(exc), "success": False}
+    elif datacenter:
+        try:
+            dc = get_mors_with_properties(
+                service_instance, vim.Datacenter, container_ref=datacenter, local_properties=True
+            )
+        except (salt.exceptions.VMwareApiError, salt.exceptions.VMwareObjectRetrievalError) as exc:
+            return {name: False, "reason": str(exc), "success": False}
+
+    if dc:
+        dcenter = dc[0]
+
+    folders = _get_folders(dcenter[folder_key])
+        
+    return folders
+
+def _get_folders(dcenter, folders=[]):
+    for child in dcenter.childEntity:
+        if hasattr(child,"childEntity"):
+            folders.append(child)
+            _get_folders(child, folders)
+    return folders
+    
+
 def get_resource_pools(
     service_instance,
     resource_pool_names,
@@ -430,7 +498,7 @@ def get_resource_pools(
         Resourcepool managed object reference
     """
 
-    properties = ["name"]
+    properties = ["name", "summary", "owner", "parent"]
     if not resource_pool_names:
         resource_pool_names = []
     if datacenter_name:
@@ -449,12 +517,15 @@ def get_resource_pools(
 
     selected_pools = []
     for pool in resource_pools:
-        if get_all_resource_pools or (pool["name"] in resource_pool_names):
+        if get_all_resource_pools or \
+            pool["name"] in resource_pool_names or \
+            pool["owner"].name in resource_pool_names or \
+            pool["summary"].config.entity._moId in resource_pool_names:
             selected_pools.append(pool["object"])
     if not selected_pools:
         raise salt.exceptions.VMwareObjectRetrievalError(
             "The resource pools with properties "
-            "names={} get_all={} could not be found".format(selected_pools, get_all_resource_pools)
+            "names={} get_all={} could not be found".format(resource_pool_names, get_all_resource_pools)
         )
 
     return selected_pools

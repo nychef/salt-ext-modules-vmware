@@ -67,8 +67,8 @@ def create(name, service_instance=None, profile=None):
     try:
         utils_datacenter.create_datacenter(service_instance, name)
     except salt.exceptions.VMwareApiError as exc:
-        return {name: False, "reason": str(exc)}
-    return {name: True}
+        return {name: False, "reason": str(exc), "success": False}
+    return {name: True, "success": True}
 
 
 def get(name, service_instance=None, profile=None):
@@ -103,7 +103,19 @@ def get(name, service_instance=None, profile=None):
             ret = dc[0]
     except (salt.exceptions.VMwareApiError, salt.exceptions.VMwareObjectRetrievalError) as exc:
         return {name: False, "reason": str(exc)}
-    return ret
+
+    vm_folders = utils_common.get_all_folders(service_instance, datacenter_name=None, datacenter=dc_ref)
+    ds_folders = utils_common.get_all_folders(service_instance, datacenter_name=None, datacenter=dc_ref, folder_key="datastoreFolder")
+    hs_folders = utils_common.get_all_folders(service_instance, datacenter_name=None, datacenter=dc_ref, folder_key="networkFolder")
+    nt_folders = utils_common.get_all_folders(service_instance, datacenter_name=None, datacenter=dc_ref, folder_key="hostFolder")
+    return {
+        "name": ret["name"],
+        "status": ret["overallStatus"],
+        "vm_folders": [f.name for f in vm_folders],
+        "ds_folders": [f.name for f in ds_folders],
+        "hst_folders": [f.name for f in hs_folders],
+        "ntwk_folders": [f.name for f in nt_folders],
+    }
 
 
 def delete(name, service_instance=None, profile=None):
@@ -131,5 +143,5 @@ def delete(name, service_instance=None, profile=None):
     try:
         utils_datacenter.delete_datacenter(service_instance, name)
     except (salt.exceptions.VMwareApiError, salt.exceptions.VMwareObjectRetrievalError) as exc:
-        return {name: False, "reason": str(exc)}
-    return {name: True}
+        return {name: False, "reason": str(exc), "success": False}
+    return {name: True, "success": True}
